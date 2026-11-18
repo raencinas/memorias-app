@@ -1,0 +1,5 @@
+{
+  "navigationFallback": { "rewrite": "/index.html", "exclude": ["/icons/*", "/vendor/*", "*.{js,css,png,json,webmanifest}"] },
+  "mimeTypes": { ".webmanifest": "application/manifest+json" },
+  "globalHeaders": { "Cache-Control": "no-cache" }
+}
