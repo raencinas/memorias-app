@@ -1,6 +1,6 @@
 // Guarda a "casca" do app para abrir sem internet. Rede primeiro, cópia local como reserva,
 // para que atualizações do app cheguem assim que houver conexão.
-const CACHE = 'memorias-v1';
+const CACHE = 'memorias-v2';
 const CASCA = ['./', 'index.html', 'app.css', 'app.js', 'config.js', 'vendor/msal-browser.min.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 

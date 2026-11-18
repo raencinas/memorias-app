@@ -63,3 +63,6 @@ ul.limpa li:first-child { border-top: 0; }
 #aviso.visivel { opacity: 1; }
 .erro { color: var(--alerta); font-size: 14px; overflow-wrap: anywhere; }
 [hidden] { display: none !important; }
+button.perigo { color: #b3261e; border-color: #b3261e; width: 100%; }
+button.perigo.cheio { background: #b3261e; color: #fff; }
+@media (prefers-color-scheme: dark) { button.perigo { color: #f2b8b5; border-color: #f2b8b5; } button.perigo.cheio { background: #b3261e; color: #fff; border-color: #b3261e; } }

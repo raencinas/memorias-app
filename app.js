@@ -47,6 +47,7 @@ const bd = {
   eventos: () => tx('eventos', 'readonly', s => s.getAll()),
   evento: id => tx('eventos', 'readonly', s => s.get(id)),
   salvar: ev => tx('eventos', 'readwrite', s => s.put(ev)),
+  apagar: id => tx('eventos', 'readwrite', s => s.delete(id)),
   blob: chave => tx('blobs', 'readonly', s => s.get(chave)),
   salvarBlob: (chave, b) => tx('blobs', 'readwrite', s => s.put(b, chave)),
   apagarBlob: chave => tx('blobs', 'readwrite', s => s.delete(chave))
@@ -199,6 +200,7 @@ async function sincronizar() {
   try {
     const evs = (await bd.eventos()).filter(e => e.sync !== 'ok');
     for (const ev of evs) {
+      if (!(await bd.evento(ev.id))) continue; // excluído enquanto aguardava
       const pasta = `${pref.pastaBase}/${ev.pasta}`;
       await garantirPasta(pasta);
       for (const m of ev.midias) {
@@ -217,11 +219,31 @@ async function sincronizar() {
       const atual = await bd.evento(ev.id);
       if (atual && atual.alteradoEm === marca) { atual.sync = 'ok'; await bd.salvar(atual); }
     }
+    await processarExclusoes();
   } catch (e) {
     if (e.message !== 'sem-login') ultimoErroSync = e.message;
   } finally {
     sincronizando = false; atualizarEstado();
   }
+}
+/* Exclusões: o registro some do aparelho na hora; a pasta no OneDrive é apagada
+   assim que houver login e conexão (vai para a lixeira do OneDrive). */
+const filaExclusao = {
+  ler: () => JSON.parse(localStorage.getItem('exclusoes') || '[]'),
+  gravar: l => localStorage.setItem('exclusoes', JSON.stringify(l))
+};
+async function processarExclusoes() {
+  for (const pasta of filaExclusao.ler()) {
+    await g(raiz(pasta), { method: 'DELETE', aceitar: [404] });
+    filaExclusao.gravar(filaExclusao.ler().filter(x => x !== pasta));
+  }
+}
+async function excluirEvento(ev) {
+  for (const m of ev.midias) await bd.apagarBlob(`${ev.id}/${m.nome}`);
+  await bd.apagar(ev.id);
+  filaExclusao.gravar([...filaExclusao.ler(), `${pref.pastaBase}/${ev.pasta}`]);
+  atualizarEstado();
+  sincronizar();
 }
 async function gravar(ev) {
   ev.alteradoEm = new Date().toISOString();
@@ -300,6 +322,7 @@ async function atualizarEstado() {
   if (!conta) partes.push('sem login');
   else if (sincronizando) partes.push('enviando…');
   else if (pend) partes.push(`${pend} a enviar`);
+  else if (filaExclusao.ler().length) partes.push('exclusão pendente');
   else partes.push('tudo no OneDrive');
   if (!navigator.onLine) partes.push('offline');
   $('#estado').textContent = partes.join(' · ');
@@ -488,7 +511,22 @@ async function telaEvento(id, liberado) {
       <label for="astatus">Grau de confiança</label>
       <select id="astatus">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}"${k === 'incerto' ? ' selected' : ''}>${v}</option>`).join('')}</select>
       <p><button class="principal" type="submit">Salvar acréscimo</button></p>
-    </form>`;
+    </form>
+    <div class="cartao" id="zonaExcluir">
+      <button id="excluir" class="perigo">Excluir registro</button>
+    </div>`;
+  $('#excluir').onclick = () => {
+    $('#zonaExcluir').innerHTML = `<p><strong>Excluir "${esc(ev.oque)}"?</strong></p>
+      <p class="suave">Apaga o registro deste aparelho e a pasta dele no OneDrive (vídeo, fotos, ficha, revisões e acréscimos).
+      A pasta fica na lixeira do OneDrive por um tempo, de onde ainda pode ser restaurada.</p>
+      <div class="fila"><button id="naoExcluir">Cancelar</button><button id="simExcluir" class="perigo cheio">Excluir</button></div>`;
+    $('#naoExcluir').onclick = () => telaEvento(id, true);
+    $('#simExcluir').onclick = async () => {
+      await excluirEvento(ev);
+      aviso(conta && navigator.onLine ? 'Registro excluído.' : 'Excluído aqui; a pasta no OneDrive sai quando houver conexão.');
+      ir('arquivo');
+    };
+  };
   $('#voltar').onclick = () => ir('arquivo');
   $('#afonte').onchange = e => {
     $('#aquemBox').hidden = e.target.value !== 'ouvi';
