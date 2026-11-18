@@ -121,30 +121,74 @@ function fichaMd(ev) {
 }
 
 /* ---------- login Microsoft ---------- */
-let pca = null, conta = null, erroLogin = '';
+/* Duas causas faziam o login cair:
+   1) A biblioteca de login cifra o que guarda com uma chave que fica num cookie de sessão;
+      quando o app é fechado, o cookie some e ela descarta o login. Guardamos uma cópia da
+      chave e a devolvemos na abertura seguinte.
+   2) A Microsoft limita a 24 horas a renovação automática neste tipo de app. Passado esse
+      prazo, a abertura do app faz uma ida e volta rápida à página da Microsoft, sem pedir senha
+      enquanto a sessão dela ("Continuar conectado") estiver válida. Só na abertura, nunca
+      no meio do uso, para não perder o que está sendo digitado. */
+const COOKIE_CHAVE = 'msal.cache.encryption';
+const lerCookie = n => { const c = document.cookie.split('; ').find(x => x.startsWith(n + '=')); return c ? decodeURIComponent(c.slice(n.length + 1)) : ''; };
+function devolverChave() {
+  const guardada = localStorage.getItem('chaveSessao');
+  if (guardada && !lerCookie(COOKIE_CHAVE)) document.cookie = `${COOKIE_CHAVE}=${encodeURIComponent(guardada)};path=/;SameSite=Lax;Secure`;
+}
+function guardarChave() { const v = lerCookie(COOKIE_CHAVE); if (v) localStorage.setItem('chaveSessao', v); }
+
+let pca = null, conta = null, erroLogin = '', sessaoExpirada = false, podeRedirecionar = true;
+// Devolve true se o app está saindo para a página da Microsoft (renovação silenciosa).
 async function iniciarLogin() {
-  if (!window.msal) { erroLogin = 'Biblioteca de login não carregou.'; return; }
+  if (!window.msal) { erroLogin = 'Biblioteca de login não carregou.'; return false; }
   try {
+    devolverChave();
     pca = await msal.PublicClientApplication.createPublicClientApplication({
       auth: { clientId: C.clientId, authority: C.authority, redirectUri: location.origin + '/' },
       cache: { cacheLocation: 'localStorage' }
     });
-    const r = await pca.handleRedirectPromise();
-    conta = (r && r.account) || pca.getAllAccounts()[0] || null;
-    if (conta) pca.setActiveAccount(conta);
+    guardarChave();
+    const tentouSilencioso = sessionStorage.getItem('renovando') === '1';
+    let r = null;
+    try { r = await pca.handleRedirectPromise(); }
+    catch (e) {
+      if (!tentouSilencioso) throw e;
+      sessaoExpirada = true; localStorage.setItem('semRenovacao', '1'); // a Microsoft quer senha de novo
+    }
+    if (r) { localStorage.removeItem('semRenovacao'); sessionStorage.removeItem('renovando'); }
+    conta = sessaoExpirada ? null : ((r && r.account) || pca.getAllAccounts()[0] || null);
+    if (conta) { pca.setActiveAccount(conta); if (conta.username) localStorage.setItem('ultimaConta', conta.username); }
+    const ultima = localStorage.getItem('ultimaConta');
+    const podeTentar = navigator.onLine && !tentouSilencioso && !sessaoExpirada && !localStorage.getItem('semRenovacao');
+    if (!podeTentar) return false;
+    if (conta) {
+      try { await pca.acquireTokenSilent({ scopes: C.scopes, account: conta }); }
+      catch (e) {
+        if (e instanceof msal.InteractionRequiredAuthError && podeRedirecionar) {
+          sessionStorage.setItem('renovando', '1');
+          await pca.acquireTokenRedirect({ scopes: C.scopes, account: conta, prompt: 'none' });
+          return true;
+        }
+      }
+    } else if (ultima && podeRedirecionar) {
+      sessionStorage.setItem('renovando', '1');
+      await pca.loginRedirect({ scopes: C.scopes, loginHint: ultima, prompt: 'none' });
+      return true;
+    }
   } catch (e) { erroLogin = String(e && e.message || e); }
+  return false;
 }
 async function token() {
   if (!pca || !conta) throw new Error('sem-login');
   try {
     return (await pca.acquireTokenSilent({ scopes: C.scopes, account: conta })).accessToken;
   } catch (e) {
-    if (e instanceof msal.InteractionRequiredAuthError) { conta = null; atualizarEstado(); throw new Error('sem-login'); }
+    if (e instanceof msal.InteractionRequiredAuthError) { conta = null; sessaoExpirada = true; atualizarEstado(); throw new Error('sem-login'); }
     throw e;
   }
 }
-const entrar = () => pca && pca.loginRedirect({ scopes: C.scopes, prompt: 'select_account' });
-const sair = () => pca && pca.logoutRedirect({ account: conta });
+const entrar = () => { if (!pca) return; sessionStorage.removeItem('renovando'); localStorage.removeItem('semRenovacao'); return pca.loginRedirect({ scopes: C.scopes, prompt: 'select_account' }); };
+const sair = () => { if (!pca) return; ['ultimaConta', 'chaveSessao', 'semRenovacao'].forEach(k => localStorage.removeItem(k)); return pca.logoutRedirect({ account: conta }); };
 
 /* ---------- OneDrive (Microsoft Graph) ---------- */
 const raiz = caminho => '/me/drive/root:/' + caminho.split('/').filter(Boolean).map(encodeURIComponent).join('/');
@@ -319,7 +363,7 @@ async function atualizarEstado() {
   const evs = await bd.eventos();
   const pend = evs.filter(e => e.sync !== 'ok').length;
   const partes = [];
-  if (!conta) partes.push('sem login');
+  if (!conta) partes.push(sessaoExpirada ? 'login expirou' : 'sem login');
   else if (sincronizando) partes.push('enviando…');
   else if (pend) partes.push(`${pend} a enviar`);
   else if (filaExclusao.ler().length) partes.push('exclusão pendente');
@@ -552,6 +596,7 @@ async function telaAjustes() {
     <div class="cartao"><strong>Conta Microsoft</strong>
       <p>${conta ? `Conectado como ${esc(conta.username || conta.name || 'conta Microsoft')}.` : 'Não conectado. Os registros ficam guardados neste aparelho até você entrar.'}</p>
       ${erroLogin ? `<p class="erro">Erro no login: ${esc(erroLogin)}</p>` : ''}
+      ${sessaoExpirada && !conta ? '<p class="erro">A sessão da Microsoft expirou. Entre de novo e, se ela perguntar, escolha continuar conectado.</p>' : ''}
       <button class="principal" id="login">${conta ? 'Sair' : 'Entrar com a conta Microsoft'}</button>
     </div>
     <div class="cartao"><strong>OneDrive</strong>
@@ -595,9 +640,16 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { at
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 (async () => {
-  ir('capturar');
-  await iniciarLogin();
-  await atualizarEstado();
-  if (erroLogin) ir('ajustes');
-  sincronizar();
+  $('#view').innerHTML = '<p class="suave">Abrindo…</p>';
+  const login = iniciarLogin().then(async saindo => {
+    if (!saindo) { await atualizarEstado(); sincronizar(); if (abaAtual === 'ajustes') telaAjustes(); }
+    return saindo;
+  });
+  // Não segura a tela de captura por mais de 4 s se a rede estiver lenta.
+  const saindo = await Promise.race([login, new Promise(r => setTimeout(() => r(false), 4000))]);
+  podeRedirecionar = false;
+  if (saindo) return;
+  ir(erroLogin ? 'ajustes' : 'capturar');
+  if (sessaoExpirada) aviso('O login expirou. Entre de novo em Ajustes.');
+  atualizarEstado();
 })();
